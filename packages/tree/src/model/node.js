@@ -1,5 +1,6 @@
 import objectAssign from 'element-ui/src/utils/merge';
 import { markNodeData, NODE_KEY } from './util';
+import { arrayFindIndex } from 'element-ui/src/utils/util';
 
 export const getChildState = node => {
   let all = true;
@@ -71,6 +72,7 @@ export default class Node {
     this.expanded = false;
     this.parent = null;
     this.visible = true;
+    this.isCurrent = false;
 
     for (let name in options) {
       if (options.hasOwnProperty(name)) {
@@ -111,7 +113,9 @@ export default class Node {
     } else if (this.level > 0 && store.lazy && store.defaultExpandAll) {
       this.expand();
     }
-
+    if (!Array.isArray(this.data)) {
+      markNodeData(this, this.data);
+    }
     if (!this.data) return;
     const defaultExpandedKeys = store.defaultExpandedKeys;
     const key = store.key;
@@ -121,6 +125,7 @@ export default class Node {
 
     if (key && store.currentNodeKey !== undefined && this.key === store.currentNodeKey) {
       store.currentNode = this;
+      store.currentNode.isCurrent = true;
     }
 
     if (store.lazy) {
@@ -154,10 +159,6 @@ export default class Node {
     return getPropertyFromData(this, 'label');
   }
 
-  get icon() {
-    return getPropertyFromData(this, 'icon');
-  }
-
   get key() {
     const nodeKey = this.store.key;
     if (this.data) return this.data[nodeKey];
@@ -168,12 +169,58 @@ export default class Node {
     return getPropertyFromData(this, 'disabled');
   }
 
+  get nextSibling() {
+    const parent = this.parent;
+    if (parent) {
+      const index = parent.childNodes.indexOf(this);
+      if (index > -1) {
+        return parent.childNodes[index + 1];
+      }
+    }
+    return null;
+  }
+
+  get previousSibling() {
+    const parent = this.parent;
+    if (parent) {
+      const index = parent.childNodes.indexOf(this);
+      if (index > -1) {
+        return index > 0 ? parent.childNodes[index - 1] : null;
+      }
+    }
+    return null;
+  }
+
+  contains(target, deep = true) {
+    const walk = function(parent) {
+      const children = parent.childNodes || [];
+      let result = false;
+      for (let i = 0, j = children.length; i < j; i++) {
+        const child = children[i];
+        if (child === target || (deep && walk(child))) {
+          result = true;
+          break;
+        }
+      }
+      return result;
+    };
+
+    return walk(this);
+  }
+
+  remove() {
+    const parent = this.parent;
+    if (parent) {
+      parent.removeChild(this);
+    }
+  }
+
   insertChild(child, index, batch) {
     if (!child) throw new Error('insertChild error: child is required.');
 
     if (!(child instanceof Node)) {
       if (!batch) {
-        const children = this.getChildren() || [];
+        const children = this.getChildren(true);
         if (children.indexOf(child.data) === -1) {
           if (typeof index === 'undefined' || index < 0) {
             children.push(child.data);
@@ -237,11 +284,13 @@ export default class Node {
 
   removeChildByData(data) {
     let targetNode = null;
-    this.childNodes.forEach(node => {
-      if (node.data === data) {
-        targetNode = node;
+
+    for (let i = 0; i < this.childNodes.length; i++) {
+      if (this.childNodes[i].data === data) {
+        targetNode = this.childNodes[i];
+        break;
       }
-    });
+    }
 
     if (targetNode) {
       this.removeChild(targetNode);
@@ -266,7 +315,7 @@ export default class Node {
         if (data instanceof Array) {
           if (this.checked) {
             this.setChecked(true, true);
-          } else {
+          } else if (!this.store.checkStrictly) {
             reInitChecked(this);
           }
           done();
@@ -357,7 +406,7 @@ export default class Node {
     }
   }
 
-  getChildren() { // this is data
+  getChildren(forceInit = false) { // this is data
     if (this.level === 0) return this.data;
     const data = this.data;
     if (!data) return null;
@@ -372,6 +421,10 @@ export default class Node {
       data[children] = null;
     }
 
+    if (forceInit && !data[children]) {
+      data[children] = [];
+    }
+
     return data[children];
   }
 
@@ -383,16 +436,20 @@ export default class Node {
     const newNodes = [];
 
     newData.forEach((item, index) => {
-      if (item[NODE_KEY]) {
-        newDataMap[item[NODE_KEY]] = { index, data: item };
+      const key = item[NODE_KEY];
+      const isNodeExists = !!key && arrayFindIndex(oldData, data => data[NODE_KEY] === key) >= 0;
+      if (isNodeExists) {
+        newDataMap[key] = { index, data: item };
       } else {
         newNodes.push({ index, data: item });
       }
     });
 
-    oldData.forEach((item) => {
-      if (!newDataMap[item[NODE_KEY]]) this.removeChildByData(item);
-    });
+    if (!this.store.lazy) {
+      oldData.forEach((item) => {
+        if (!newDataMap[item[NODE_KEY]]) this.removeChildByData(item);
+      });
+    }
 
     newNodes.forEach(({ index, data }) => {
       this.insertChild({ data }, index);
